@@ -11,7 +11,7 @@ export type Resource = {
 
 export type Textbook = {
   id: string;
-  subjectId: string;
+  subjectId?: string;
   title: string;
   fileName?: string;
   url: string;
@@ -674,7 +674,7 @@ export function deleteNote(noteId: string) {
 }
 
 export function addTextbook(input: {
-  subjectId: string;
+  subjectId?: string;
   title: string;
   fileName: string;
   url: string;

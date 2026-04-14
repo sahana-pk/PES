@@ -62,6 +62,8 @@ export function AdminPage() {
   const [topicForm, setTopicForm] = useState({ name: "" });
   const [textbookForm, setTextbookForm] = useState({ title: "" });
   const [textbookFile, setTextbookFile] = useState<File | null>(null);
+  const [globalTextbookForm, setGlobalTextbookForm] = useState({ title: "" });
+  const [globalTextbookFile, setGlobalTextbookFile] = useState<File | null>(null);
   const [googleSignedIn, setGoogleSignedIn] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [availableTextbooks, setAvailableTextbooks] = useState<Array<{ id: string; name: string; webViewLink: string }>>([]);
@@ -163,13 +165,8 @@ export function AdminPage() {
   };
 
   const importTextbookFromDrive = (file: { id: string; name: string; webViewLink: string }) => {
-    if (!selectedSubjectId) {
-      alert('Please select a subject first');
-      return;
-    }
-    
     addTextbook({
-      subjectId: selectedSubjectId,
+      subjectId: selectedSubjectId || undefined,
       title: file.name,
       url: file.webViewLink,
       fileName: file.name,
@@ -839,6 +836,97 @@ export function AdminPage() {
             ))}
             {selectedSubjectId && textbooks.length === 0 ? (
               <p className="text-sm text-slate-500">No textbooks added for this subject.</p>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="bg-white rounded-xl shadow border p-4">
+          <h2 className="text-xl font-medium mb-3">Global Textbooks (Available to Everyone)</h2>
+          <div className="grid md:grid-cols-2 gap-3">
+            <input
+              className="border rounded-md px-3 py-2"
+              placeholder="Textbook title"
+              aria-label="Global textbook title"
+              value={globalTextbookForm.title}
+              onChange={(e) => setGlobalTextbookForm((v) => ({ ...v, title: e.target.value }))}
+            />
+            <input
+              className="border rounded-md px-3 py-2"
+              type="file"
+              accept=".pdf,.doc,.docx,.ppt,.pptx"
+              aria-label="Global textbook file upload"
+              onChange={(e) => setGlobalTextbookFile(e.target.files?.[0] ?? null)}
+            />
+          </div>
+          <div className="mt-3 flex items-center gap-2">
+            {googleSignedIn ? (
+              <span className="text-green-600 text-sm">✓ Signed in to Google</span>
+            ) : (
+              <button
+                className="px-3 py-1.5 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700"
+                onClick={async () => {
+                  try {
+                    await signIn();
+                    setGoogleSignedIn(true);
+                  } catch (error) {
+                    console.error('Google sign-in failed:', error);
+                    alert('Failed to sign in to Google. Please check your credentials in .env');
+                  }
+                }}
+              >
+                Sign in to Google
+              </button>
+            )}
+          </div>
+          <button
+            className="mt-3 px-4 py-2 bg-primary text-white rounded-md disabled:opacity-50 hover:bg-primary/90"
+            disabled={!globalTextbookForm.title.trim() || !globalTextbookFile || uploading || !googleSignedIn}
+            onClick={async () => {
+              if (!globalTextbookForm.title.trim() || !globalTextbookFile) return;
+              setUploading(true);
+              try {
+                const folderId = await getOrCreateTextbooksFolder();
+                const result = await uploadFileToDrive(globalTextbookFile, folderId);
+                
+                addTextbook({
+                  title: globalTextbookForm.title,
+                  url: result.webViewLink,
+                  fileName: globalTextbookFile.name,
+                  driveFileId: result.id,
+                });
+                setGlobalTextbookForm({ title: "" });
+                setGlobalTextbookFile(null);
+                alert('Global textbook uploaded successfully!');
+                refresh();
+              } catch (error) {
+                console.error('Upload failed:', error);
+                alert(`Upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+              } finally {
+                setUploading(false);
+              }
+            }}
+          >
+            {uploading ? 'Uploading...' : 'Upload Global Textbook to Google Drive'}
+          </button>
+          <div className="mt-4 space-y-2">
+            {textbooks.filter(tb => !tb.subjectId).map((tb) => (
+              <div key={tb.id} className="grid md:grid-cols-[1fr_auto] gap-2 items-center border rounded-md p-2">
+                <a href={tb.url} target="_blank" rel="noopener noreferrer" className="text-primary">
+                  {tb.title} {tb.fileName ? `(${tb.fileName})` : ""}
+                </a>
+                <button
+                  className="px-2 py-1 text-xs bg-red-500 text-white rounded hover:bg-red-600"
+                  onClick={() => {
+                    deleteTextbook(tb.id);
+                    refresh();
+                  }}
+                >
+                  Delete
+                </button>
+              </div>
+            ))}
+            {textbooks.filter(tb => !tb.subjectId).length === 0 ? (
+              <p className="text-sm text-slate-500">No global textbooks added.</p>
             ) : null}
           </div>
         </div>

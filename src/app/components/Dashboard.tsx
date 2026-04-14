@@ -68,6 +68,11 @@ class DataService {
     return dbGetTextbooks(subjectId);
   }
 
+  static async getGlobalTextbooks() {
+    await this.delay(300);
+    return dbGetTextbooks().filter(tb => !tb.subjectId);
+  }
+
   static async getNotes(topicId: string) {
     await this.delay(500);
     return dbGetTopicNotes(topicId);
@@ -140,6 +145,7 @@ export function Dashboard() {
   const [modules, setModules] = useState<DropdownOption[]>([]);
   const [topics, setTopics] = useState<DropdownOption[]>([]);
   const [textbooks, setTextbooks] = useState<Textbook[]>([]);
+  const [globalTextbooks, setGlobalTextbooks] = useState<Textbook[]>([]);
   const [notes, setNotes] = useState<TopicNote[]>([]);
   const [onlineResources, setOnlineResources] = useState<ResourceLink[]>([]);
   const [videos, setVideos] = useState<VideoResource[]>([]);
@@ -160,6 +166,8 @@ export function Dashboard() {
   useEffect(() => {
     DataService.getDepartments().then(setDepartments);
     DataService.getSemesters().then(setSemesters);
+    // Load global textbooks
+    DataService.getGlobalTextbooks().then(setGlobalTextbooks);
   }, []);
 
   // Load subjects when department is selected (semester required only for non-cycle departments)
@@ -290,6 +298,7 @@ export function Dashboard() {
             <button
               onClick={() => navigate("/")}
               className="p-2 hover:bg-primary/10 rounded-lg transition-colors text-primary"
+              aria-label="Go back to home"
             >
               <ArrowLeft className="w-5 h-5" />
             </button>
@@ -349,6 +358,7 @@ export function Dashboard() {
                   <select
                     disabled
                     className="w-full px-4 py-3 rounded-xl border appearance-none bg-muted/50 cursor-not-allowed text-muted-foreground border-border"
+                    aria-label="Semester not applicable"
                   >
                     <option>Not applicable (Cycle)</option>
                   </select>
@@ -424,6 +434,31 @@ export function Dashboard() {
             />
           </div>
         </motion.div>
+
+        {/* Global Textbooks section */}
+        {globalTextbooks.length > 0 && (
+          <motion.section
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mb-8 bg-white/90 rounded-2xl border border-primary/10 p-6"
+          >
+            <h3 className="text-2xl text-primary mb-3">Global Textbooks</h3>
+            <div className="grid sm:grid-cols-2 gap-3">
+              {globalTextbooks.map((book) => (
+                <a
+                  key={book.id}
+                  href={book.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="border border-primary/10 rounded-lg p-4 hover:border-primary/30 transition-colors bg-white"
+                >
+                  <div className="font-medium text-primary">{book.title}</div>
+                  <div className="text-sm text-muted-foreground">{book.fileName || "Open textbook"}</div>
+                </a>
+              ))}
+            </div>
+          </motion.section>
+        )}
 
         {/* Textbooks folder appears when subject is selected */}
         {selectedSubject && (
@@ -515,6 +550,7 @@ export function Dashboard() {
                       value={askMode}
                       onChange={(e) => setAskMode(e.target.value as "explain" | "research")}
                       className="border rounded-md px-3 py-2"
+                      aria-label="Select ask mode"
                     >
                       <option value="explain">Explain Topic</option>
                       <option value="research">Research Topic</option>
@@ -593,6 +629,7 @@ function Dropdown({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           disabled={disabled || isLoading}
+          aria-label={label}
           className={`w-full px-4 py-3 rounded-xl border appearance-none transition-all ${
             disabled || isLoading
               ? "bg-muted/50 cursor-not-allowed text-muted-foreground border-border"
