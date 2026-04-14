@@ -36,6 +36,7 @@ import {
   verifyAdminCredentials,
 } from "@/app/data/localDb";
 import { extractSyllabusFromImage, type SyllabusOutline } from "@/app/services/syllabusVisionExtract";
+import { initializeTokenClient, uploadFileToDrive, getOrCreateTextbooksFolder, isSignedIn, signIn, signOut, listTextbooksFromDrive } from "@/app/services/googleDrive";
 
 export function AdminPage() {
   const navigate = useNavigate();
@@ -59,8 +60,13 @@ export function AdminPage() {
   });
   const [moduleForm, setModuleForm] = useState({ name: "" });
   const [topicForm, setTopicForm] = useState({ name: "" });
-  const [textbookForm, setTextbookForm] = useState({ title: "", url: "" });
+  const [textbookForm, setTextbookForm] = useState({ title: "" });
   const [textbookFile, setTextbookFile] = useState<File | null>(null);
+  const [googleSignedIn, setGoogleSignedIn] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [availableTextbooks, setAvailableTextbooks] = useState<Array<{ id: string; name: string; webViewLink: string }>>([]);
+  const [loadingTextbooks, setLoadingTextbooks] = useState(false);
+  const [showImportList, setShowImportList] = useState(false);
   const [noteForm, setNoteForm] = useState({ title: "", content: "", sourceUrl: "" });
   const [onlineResourceForm, setOnlineResourceForm] = useState({
     title: "",
@@ -134,6 +140,47 @@ export function AdminPage() {
     }
   }, [topics, selectedTopicId]);
 
+  useEffect(() => {
+    // Initialize Google OAuth
+    initializeTokenClient().catch((error) => {
+      console.error('Failed to initialize Google OAuth:', error);
+    });
+    setGoogleSignedIn(isSignedIn());
+  }, []);
+
+  const loadAvailableTextbooks = async () => {
+    try {
+      setLoadingTextbooks(true);
+      const files = await listTextbooksFromDrive();
+      setAvailableTextbooks(files);
+      setShowImportList(true);
+    } catch (error) {
+      console.error('Failed to load textbooks from Google Drive:', error);
+      alert('Failed to load textbooks from Google Drive');
+    } finally {
+      setLoadingTextbooks(false);
+    }
+  };
+
+  const importTextbookFromDrive = (file: { id: string; name: string; webViewLink: string }) => {
+    if (!selectedSubjectId) {
+      alert('Please select a subject first');
+      return;
+    }
+    
+    addTextbook({
+      subjectId: selectedSubjectId,
+      title: file.name,
+      url: file.webViewLink,
+      fileName: file.name,
+      driveFileId: file.id,
+    });
+    
+    refresh();
+    alert(`Textbook "${file.name}" imported successfully!`);
+    setShowImportList(false);
+  };
+
   function handleSyllabusPaste(e: React.ClipboardEvent) {
     const items = e.clipboardData?.items;
     if (!items?.length) return;
@@ -180,16 +227,22 @@ export function AdminPage() {
           <h1 className="text-2xl font-semibold mb-1">Admin Login</h1>
           <p className="text-sm text-slate-600 mb-4">Authorized admin email: {getAdminEmail() || "(set in .env)"}</p>
 
-          <label className="block text-sm mb-1">Email</label>
+          <label htmlFor="admin-email" className="block text-sm mb-1">
+            Email
+          </label>
           <input
+            id="admin-email"
             className="w-full border rounded-md px-3 py-2 mb-3"
             type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             required
           />
-          <label className="block text-sm mb-1">Password</label>
+          <label htmlFor="admin-password" className="block text-sm mb-1">
+            Password
+          </label>
           <input
+            id="admin-password"
             className="w-full border rounded-md px-3 py-2 mb-3"
             type="password"
             value={password}
@@ -245,6 +298,7 @@ export function AdminPage() {
               type="file"
               accept="image/png,image/jpeg,image/webp,image/gif"
               className="border rounded-md px-3 py-2 text-sm"
+              aria-label="Upload syllabus image file"
               onChange={(e) => {
                 setSyllabusFile(e.target.files?.[0] ?? null);
                 setSyllabusPasteDataUrl(null);
@@ -300,8 +354,11 @@ export function AdminPage() {
                 {syllabusPreview.modules.map((mod, mi) => (
                   <div key={mi} className="border border-slate-200 rounded-md p-3 bg-white space-y-2">
                     <div className="flex flex-wrap gap-2 items-center">
-                      <label className="text-xs text-slate-500 w-full sm:w-auto">Module name</label>
+                      <label htmlFor={`syllabus-module-name-${mi}`} className="text-xs text-slate-500 w-full sm:w-auto">
+                        Module name
+                      </label>
                       <input
+                        id={`syllabus-module-name-${mi}`}
                         className="flex-1 min-w-[200px] border rounded-md px-2 py-1.5 text-sm font-semibold text-primary"
                         value={mod.name}
                         onChange={(e) => {
@@ -331,6 +388,7 @@ export function AdminPage() {
                             className="flex-1 border rounded-md px-2 py-1 text-sm text-slate-700"
                             value={t}
                             placeholder="Topic"
+                            aria-label="Syllabus topic name"
                             onChange={(e) => {
                               const next = syllabusPreview.modules.map((m, i) => {
                                 if (i !== mi) return m;
@@ -416,6 +474,7 @@ export function AdminPage() {
           <h2 className="text-xl font-medium mb-3">Selection Flow</h2>
           <div className="grid md:grid-cols-4 gap-3">
             <select
+              aria-label="Select department"
               className="border rounded-md px-3 py-2"
               value={selectedDepartmentId}
               onChange={(e) => {
@@ -433,6 +492,7 @@ export function AdminPage() {
             </select>
             {departmentUsesSemesters(selectedDepartmentId) ? (
               <select
+                aria-label="Select semester"
                 className="border rounded-md px-3 py-2"
                 value={selectedSemesterId}
                 onChange={(e) => {
@@ -449,11 +509,16 @@ export function AdminPage() {
                 ))}
               </select>
             ) : (
-              <select className="border rounded-md px-3 py-2 bg-slate-100 text-slate-600 cursor-not-allowed" disabled>
+              <select
+                aria-label="Semester not applicable"
+                className="border rounded-md px-3 py-2 bg-slate-100 text-slate-600 cursor-not-allowed"
+                disabled
+              >
                 <option>Not applicable (Cycle)</option>
               </select>
             )}
             <select
+              aria-label="Select subject"
               className="border rounded-md px-3 py-2"
               value={selectedSubjectId}
               onChange={(e) => {
@@ -474,6 +539,7 @@ export function AdminPage() {
               ))}
             </select>
             <select
+              aria-label="Select module"
               className="border rounded-md px-3 py-2"
               value={selectedModuleId}
               onChange={(e) => setSelectedModuleId(e.target.value)}
@@ -487,6 +553,7 @@ export function AdminPage() {
               ))}
             </select>
             <select
+              aria-label="Select topic"
               className="border rounded-md px-3 py-2"
               value={selectedTopicId}
               onChange={(e) => setSelectedTopicId(e.target.value)}
@@ -515,12 +582,14 @@ export function AdminPage() {
             <input
               className="border rounded-md px-3 py-2"
               placeholder="Subject name"
+              aria-label="Subject name"
               value={subjectForm.name}
               onChange={(e) => setSubjectForm((s) => ({ ...s, name: e.target.value }))}
             />
             <input
               className="border rounded-md px-3 py-2"
               placeholder="Code (optional)"
+              aria-label="Subject code"
               value={subjectForm.code}
               onChange={(e) => setSubjectForm((s) => ({ ...s, code: e.target.value }))}
             />
@@ -557,6 +626,7 @@ export function AdminPage() {
             <input
               className="border rounded-md px-3 py-2"
               placeholder="Module name"
+              aria-label="Module name"
               value={moduleForm.name}
               onChange={(e) => setModuleForm((m) => ({ ...m, name: e.target.value }))}
             />
@@ -585,6 +655,7 @@ export function AdminPage() {
             <input
               className="border rounded-md px-3 py-2"
               placeholder="Topic name"
+              aria-label="Topic name"
               value={topicForm.name}
               onChange={(e) => setTopicForm((t) => ({ ...t, name: e.target.value }))}
             />
@@ -635,57 +706,124 @@ export function AdminPage() {
         />
 
         <div className="bg-white rounded-xl shadow border p-4">
-          <h2 className="text-xl font-medium mb-3">Textbooks Folder (Subject-wise)</h2>
+          <h2 className="text-xl font-medium mb-3">Upload Textbooks to Google Drive</h2>
           <p className="text-sm text-slate-600 mb-3">
             Linked subject: {subjects.find((s) => s.id === selectedSubjectId)?.name ?? "None selected"}
           </p>
-          <div className="grid md:grid-cols-3 gap-3">
+          <div className="grid md:grid-cols-2 gap-3">
             <input
               className="border rounded-md px-3 py-2"
               placeholder="Textbook title"
+              aria-label="Textbook title"
               value={textbookForm.title}
               onChange={(e) => setTextbookForm((v) => ({ ...v, title: e.target.value }))}
             />
             <input
               className="border rounded-md px-3 py-2"
-              placeholder="URL or local path (optional)"
-              value={textbookForm.url}
-              onChange={(e) => setTextbookForm((v) => ({ ...v, url: e.target.value }))}
-            />
-            <input
-              className="border rounded-md px-3 py-2"
               type="file"
               accept=".pdf,.doc,.docx,.ppt,.pptx"
+              aria-label="Textbook file upload"
               onChange={(e) => setTextbookFile(e.target.files?.[0] ?? null)}
             />
           </div>
+          <div className="mt-3 flex items-center gap-2">
+            {googleSignedIn ? (
+              <span className="text-green-600 text-sm">✓ Signed in to Google</span>
+            ) : (
+              <button
+                className="px-3 py-1.5 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700"
+                onClick={async () => {
+                  try {
+                    await signIn();
+                    setGoogleSignedIn(true);
+                  } catch (error) {
+                    console.error('Google sign-in failed:', error);
+                    alert('Failed to sign in to Google. Please check your credentials in .env');
+                  }
+                }}
+              >
+                Sign in to Google
+              </button>
+            )}
+          </div>
           <button
-            className="mt-3 px-4 py-2 bg-primary text-white rounded-md"
-            disabled={!selectedSubjectId}
+            className="mt-3 px-4 py-2 bg-primary text-white rounded-md disabled:opacity-50 hover:bg-primary/90"
+            disabled={!selectedSubjectId || !textbookForm.title.trim() || !textbookFile || uploading || !googleSignedIn}
             onClick={async () => {
-              if (!selectedSubjectId || !textbookForm.title.trim()) return;
-              let dataUrl: string | undefined;
-              if (textbookFile) {
-                dataUrl = await fileToDataUrl(textbookFile);
+              if (!selectedSubjectId || !textbookForm.title.trim() || !textbookFile) return;
+              setUploading(true);
+              try {
+                const folderId = await getOrCreateTextbooksFolder();
+                const result = await uploadFileToDrive(textbookFile, folderId);
+                
+                addTextbook({
+                  subjectId: selectedSubjectId,
+                  title: textbookForm.title,
+                  url: result.webViewLink,
+                  fileName: textbookFile.name,
+                  driveFileId: result.id,
+                });
+                setTextbookForm({ title: "" });
+                setTextbookFile(null);
+                alert('Textbook uploaded successfully!');
+                refresh();
+              } catch (error) {
+                console.error('Upload failed:', error);
+                alert(`Upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+              } finally {
+                setUploading(false);
               }
-              addTextbook({
-                subjectId: selectedSubjectId,
-                title: textbookForm.title,
-                url: textbookForm.url,
-                fileName: textbookFile?.name,
-                dataUrl,
-              });
-              setTextbookForm({ title: "", url: "" });
-              setTextbookFile(null);
-              refresh();
             }}
           >
-            Upload / Link Textbook
+            {uploading ? 'Uploading...' : 'Upload Textbook to Google Drive'}
           </button>
+          <button
+            className="mt-2 px-4 py-2 bg-blue-500 text-white rounded-md disabled:opacity-50 hover:bg-blue-600"
+            disabled={!selectedSubjectId || !googleSignedIn || loadingTextbooks}
+            onClick={loadAvailableTextbooks}
+          >
+            {loadingTextbooks ? 'Loading...' : 'Import from Google Drive'}
+          </button>
+          
+          {showImportList && (
+            <div className="mt-4 p-4 border rounded-lg bg-blue-50">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="font-semibold text-lg">Available Textbooks in Google Drive</h3>
+                <button
+                  className="text-gray-500 hover:text-gray-700"
+                  onClick={() => setShowImportList(false)}
+                >
+                  ✕
+                </button>
+              </div>
+              {availableTextbooks.length === 0 ? (
+                <p className="text-gray-600">No textbooks found in Google Drive Textbooks folder</p>
+              ) : (
+                <div className="space-y-2 max-h-96 overflow-y-auto">
+                  {availableTextbooks.map((file) => (
+                    <div key={file.id} className="flex items-center justify-between bg-white p-3 rounded-md border">
+                      <div className="flex-1">
+                        <p className="font-medium text-sm">{file.name}</p>
+                        <a href={file.webViewLink} target="_blank" rel="noopener noreferrer" className="text-blue-600 text-xs hover:underline">
+                          View in Drive
+                        </a>
+                      </div>
+                      <button
+                        className="ml-3 px-3 py-1.5 bg-green-600 text-white rounded-md text-sm hover:bg-green-700"
+                        onClick={() => importTextbookFromDrive(file)}
+                      >
+                        Import
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           <div className="mt-4 space-y-2">
             {textbooks.map((tb) => (
               <div key={tb.id} className="grid md:grid-cols-[1fr_auto] gap-2 items-center border rounded-md p-2">
-                <a href={tb.url || tb.dataUrl || "#"} target="_blank" rel="noopener noreferrer" className="text-primary">
+                <a href={tb.url} target="_blank" rel="noopener noreferrer" className="text-primary">
                   {tb.title} {tb.fileName ? `(${tb.fileName})` : ""}
                 </a>
                 <button
@@ -713,9 +851,9 @@ export function AdminPage() {
           <div className="grid lg:grid-cols-3 gap-4">
             <div className="border rounded-lg p-3">
               <h3 className="font-semibold mb-2">Notes</h3>
-              <input className="border rounded-md px-3 py-2 w-full mb-2" placeholder="Title" value={noteForm.title} onChange={(e) => setNoteForm((v) => ({ ...v, title: e.target.value }))} />
-              <textarea className="border rounded-md px-3 py-2 w-full mb-2" placeholder="Content" value={noteForm.content} onChange={(e) => setNoteForm((v) => ({ ...v, content: e.target.value }))} />
-              <input className="border rounded-md px-3 py-2 w-full mb-2" placeholder="Source URL (optional)" value={noteForm.sourceUrl} onChange={(e) => setNoteForm((v) => ({ ...v, sourceUrl: e.target.value }))} />
+              <input className="border rounded-md px-3 py-2 w-full mb-2" placeholder="Title" aria-label="Note title" value={noteForm.title} onChange={(e) => setNoteForm((v) => ({ ...v, title: e.target.value }))} />
+              <textarea className="border rounded-md px-3 py-2 w-full mb-2" placeholder="Content" aria-label="Note content" value={noteForm.content} onChange={(e) => setNoteForm((v) => ({ ...v, content: e.target.value }))} />
+              <input className="border rounded-md px-3 py-2 w-full mb-2" placeholder="Source URL (optional)" aria-label="Note source URL" value={noteForm.sourceUrl} onChange={(e) => setNoteForm((v) => ({ ...v, sourceUrl: e.target.value }))} />
               <button
                 className="px-3 py-2 bg-primary text-white rounded-md w-full"
                 disabled={!selectedTopicId}
@@ -740,10 +878,10 @@ export function AdminPage() {
 
             <div className="border rounded-lg p-3">
               <h3 className="font-semibold mb-2">Online Resources</h3>
-              <input className="border rounded-md px-3 py-2 w-full mb-2" placeholder="Title" value={onlineResourceForm.title} onChange={(e) => setOnlineResourceForm((v) => ({ ...v, title: e.target.value }))} />
-              <input className="border rounded-md px-3 py-2 w-full mb-2" placeholder="Description" value={onlineResourceForm.description} onChange={(e) => setOnlineResourceForm((v) => ({ ...v, description: e.target.value }))} />
-              <input className="border rounded-md px-3 py-2 w-full mb-2" placeholder="URL" value={onlineResourceForm.url} onChange={(e) => setOnlineResourceForm((v) => ({ ...v, url: e.target.value }))} />
-              <select className="border rounded-md px-3 py-2 w-full mb-2" value={onlineResourceForm.type} onChange={(e) => setOnlineResourceForm((v) => ({ ...v, type: e.target.value as "Article" | "GitHub" }))}>
+              <input className="border rounded-md px-3 py-2 w-full mb-2" placeholder="Title" aria-label="Online resource title" value={onlineResourceForm.title} onChange={(e) => setOnlineResourceForm((v) => ({ ...v, title: e.target.value }))} />
+              <input className="border rounded-md px-3 py-2 w-full mb-2" placeholder="Description" aria-label="Online resource description" value={onlineResourceForm.description} onChange={(e) => setOnlineResourceForm((v) => ({ ...v, description: e.target.value }))} />
+              <input className="border rounded-md px-3 py-2 w-full mb-2" placeholder="URL" aria-label="Online resource URL" value={onlineResourceForm.url} onChange={(e) => setOnlineResourceForm((v) => ({ ...v, url: e.target.value }))} />
+              <select aria-label="Online resource type" className="border rounded-md px-3 py-2 w-full mb-2" value={onlineResourceForm.type} onChange={(e) => setOnlineResourceForm((v) => ({ ...v, type: e.target.value as "Article" | "GitHub" }))}>
                 <option value="Article">Article</option>
                 <option value="GitHub">GitHub</option>
               </select>
@@ -771,9 +909,9 @@ export function AdminPage() {
 
             <div className="border rounded-lg p-3">
               <h3 className="font-semibold mb-2">Videos</h3>
-              <input className="border rounded-md px-3 py-2 w-full mb-2" placeholder="Title" value={videoForm.title} onChange={(e) => setVideoForm((v) => ({ ...v, title: e.target.value }))} />
-              <input className="border rounded-md px-3 py-2 w-full mb-2" placeholder="Description" value={videoForm.description} onChange={(e) => setVideoForm((v) => ({ ...v, description: e.target.value }))} />
-              <input className="border rounded-md px-3 py-2 w-full mb-2" placeholder="Video URL" value={videoForm.url} onChange={(e) => setVideoForm((v) => ({ ...v, url: e.target.value }))} />
+              <input className="border rounded-md px-3 py-2 w-full mb-2" placeholder="Title" aria-label="Video title" value={videoForm.title} onChange={(e) => setVideoForm((v) => ({ ...v, title: e.target.value }))} />
+              <input className="border rounded-md px-3 py-2 w-full mb-2" placeholder="Description" aria-label="Video description" value={videoForm.description} onChange={(e) => setVideoForm((v) => ({ ...v, description: e.target.value }))} />
+              <input className="border rounded-md px-3 py-2 w-full mb-2" placeholder="Video URL" aria-label="Video URL" value={videoForm.url} onChange={(e) => setVideoForm((v) => ({ ...v, url: e.target.value }))} />
               <button
                 className="px-3 py-2 bg-primary text-white rounded-md w-full"
                 disabled={!selectedTopicId}
@@ -829,6 +967,7 @@ function ManagerSection({
           <div key={row.id} className="grid md:grid-cols-[1fr_auto_auto] gap-2 items-center">
             <input
               className="border rounded-md px-3 py-2"
+              aria-label={`Edit ${row.label}`}
               value={drafts[row.id] ?? row.label}
               onChange={(e) => setDrafts((d) => ({ ...d, [row.id]: e.target.value }))}
             />

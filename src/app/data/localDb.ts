@@ -14,8 +14,8 @@ export type Textbook = {
   subjectId: string;
   title: string;
   fileName?: string;
-  url?: string;
-  dataUrl?: string;
+  url: string;
+  driveFileId: string;
   createdAt: string;
 };
 
@@ -676,18 +676,18 @@ export function deleteNote(noteId: string) {
 export function addTextbook(input: {
   subjectId: string;
   title: string;
-  fileName?: string;
-  url?: string;
-  dataUrl?: string;
+  fileName: string;
+  url: string;
+  driveFileId: string;
 }) {
   const db = ensureDb();
   const textbook: Textbook = {
     id: makeId("tb", input.title),
     subjectId: input.subjectId,
     title: input.title.trim(),
-    fileName: input.fileName?.trim() || undefined,
-    url: input.url?.trim() || undefined,
-    dataUrl: input.dataUrl,
+    fileName: input.fileName.trim(),
+    url: input.url,
+    driveFileId: input.driveFileId,
     createdAt: new Date().toISOString(),
   };
   db.textbooks.push(textbook);
