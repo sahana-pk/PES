@@ -14,8 +14,9 @@ export type Textbook = {
   subjectId?: string;
   title: string;
   fileName?: string;
-  url: string;
-  driveFileId: string;
+  url?: string;
+  driveFileId?: string;
+  status: "approved" | "pending";
   createdAt: string;
 };
 
@@ -52,8 +53,7 @@ export type Db = {
   textbooks: Textbook[];
 };
 
-const STORAGE_KEY = "pesitm_db_v1";
-const ADMIN_SESSION_KEY = "pesitm_admin_session";
+let adminSessionInMemory = false;
 
 const FIXED_DEPARTMENTS = [
   { id: "cse", name: "Computer Science and Engineering" },
@@ -259,26 +259,6 @@ const seedDb: Db = {
 
 let cachedDb: Db | null = null;
 
-function canUseStorage() {
-  return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
-}
-
-function loadDbFromStorage(): Db | null {
-  if (!canUseStorage()) return null;
-  try {
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    return JSON.parse(raw) as Db;
-  } catch {
-    return null;
-  }
-}
-
-function saveDbToStorage(db: Db) {
-  if (!canUseStorage()) return;
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
-}
-
 function normalizeDb(db: Db): Db {
   const allowedDepartmentIds = new Set<string>(FIXED_DEPARTMENTS.map((d) => d.id));
   const allowedSemesterIds = new Set<string>(FIXED_SEMESTERS.map((s) => s.id));
@@ -313,15 +293,12 @@ function normalizeDb(db: Db): Db {
 
 function ensureDb(): Db {
   if (cachedDb) return cachedDb;
-  const stored = loadDbFromStorage();
-  cachedDb = normalizeDb(stored ?? seedDb);
-  saveDbToStorage(cachedDb);
+  cachedDb = normalizeDb(seedDb);
   return cachedDb;
 }
 
 export function resetDbForDevelopment() {
   cachedDb = normalizeDb(seedDb);
-  saveDbToStorage(cachedDb);
 }
 
 export function getDepartments(): DropdownOption[] {
@@ -378,7 +355,17 @@ export function getTopicNotes(topicId: string) {
 
 export function getTextbooks(subjectId: string) {
   const db = ensureDb();
+  return db.textbooks.filter((t) => t.subjectId === subjectId && t.status === "approved");
+}
+
+export function getTextbooksForAdmin(subjectId: string) {
+  const db = ensureDb();
   return db.textbooks.filter((t) => t.subjectId === subjectId);
+}
+
+export function listPendingTextbookRequests() {
+  const db = ensureDb();
+  return db.textbooks.filter((t) => t.status === "pending");
 }
 
 // -------- Admin access helpers --------
@@ -393,13 +380,11 @@ export function verifyAdminCredentials(email: string, password: string): boolean
 }
 
 export function setAdminSession(isLoggedIn: boolean) {
-  if (!canUseStorage()) return;
-  window.localStorage.setItem(ADMIN_SESSION_KEY, isLoggedIn ? "1" : "0");
+  adminSessionInMemory = isLoggedIn;
 }
 
 export function isAdminLoggedIn(): boolean {
-  if (!canUseStorage()) return false;
-  return window.localStorage.getItem(ADMIN_SESSION_KEY) === "1";
+  return adminSessionInMemory;
 }
 
 export function logoutAdmin() {
@@ -409,7 +394,6 @@ export function logoutAdmin() {
 // -------- Admin CRUD (subjects/modules/topics) --------
 function persist(db: Db) {
   cachedDb = normalizeDb(db);
-  saveDbToStorage(cachedDb);
 }
 
 function makeId(prefix: string, name: string) {
@@ -676,23 +660,38 @@ export function deleteNote(noteId: string) {
 export function addTextbook(input: {
   subjectId?: string;
   title: string;
-  fileName: string;
-  url: string;
-  driveFileId: string;
+  fileName?: string;
+  url?: string;
+  driveFileId?: string;
+  status?: "approved" | "pending";
 }) {
   const db = ensureDb();
   const textbook: Textbook = {
     id: makeId("tb", input.title),
     subjectId: input.subjectId,
     title: input.title.trim(),
-    fileName: input.fileName.trim(),
+    fileName: input.fileName?.trim(),
     url: input.url,
     driveFileId: input.driveFileId,
+    status: input.status ?? "approved",
     createdAt: new Date().toISOString(),
   };
   db.textbooks.push(textbook);
   persist(db);
   return textbook;
+}
+
+export function approveTextbookRequest(textbookId: string) {
+  const db = ensureDb();
+  const textbook = db.textbooks.find((t) => t.id === textbookId);
+  if (!textbook) return null;
+  textbook.status = "approved";
+  persist(db);
+  return textbook;
+}
+
+export function rejectTextbookRequest(textbookId: string) {
+  deleteTextbook(textbookId);
 }
 
 export function deleteTextbook(textbookId: string) {

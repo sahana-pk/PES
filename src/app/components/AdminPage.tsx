@@ -8,8 +8,10 @@ import {
   addTopicVideo,
   addSubject,
   addTopic,
+  approveTextbookRequest,
   deleteNote,
   deleteModule,
+  rejectTextbookRequest,
   deleteResource,
   deleteSubject,
   deleteTextbook,
@@ -22,7 +24,8 @@ import {
   getModules,
   getSemesters,
   getSubjects,
-  getTextbooks,
+  getTextbooksForAdmin,
+  listPendingTextbookRequests,
   getTopicNotes,
   getTopicOnlineResources,
   getTopics,
@@ -36,7 +39,14 @@ import {
   verifyAdminCredentials,
 } from "@/app/data/localDb";
 import { extractSyllabusFromImage, type SyllabusOutline } from "@/app/services/syllabusVisionExtract";
-import { initializeTokenClient, uploadFileToDrive, getOrCreateTextbooksFolder, isSignedIn, signIn, signOut, listTextbooksFromDrive } from "@/app/services/googleDrive";
+import {
+  getOrCreateTextbooksFolder,
+  initializeTokenClient,
+  isSignedIn,
+  listTextbooksFromDrive,
+  signIn,
+  uploadFileToDrive,
+} from "@/app/services/googleDrive";
 
 export function AdminPage() {
   const navigate = useNavigate();
@@ -62,13 +72,13 @@ export function AdminPage() {
   const [topicForm, setTopicForm] = useState({ name: "" });
   const [textbookForm, setTextbookForm] = useState({ title: "" });
   const [textbookFile, setTextbookFile] = useState<File | null>(null);
-  const [globalTextbookForm, setGlobalTextbookForm] = useState({ title: "" });
-  const [globalTextbookFile, setGlobalTextbookFile] = useState<File | null>(null);
   const [googleSignedIn, setGoogleSignedIn] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [availableTextbooks, setAvailableTextbooks] = useState<Array<{ id: string; name: string; webViewLink: string }>>([]);
-  const [loadingTextbooks, setLoadingTextbooks] = useState(false);
-  const [showImportList, setShowImportList] = useState(false);
+  const [uploadingTextbook, setUploadingTextbook] = useState(false);
+  const [loadingDriveTextbooks, setLoadingDriveTextbooks] = useState(false);
+  const [showDriveImportList, setShowDriveImportList] = useState(false);
+  const [availableDriveTextbooks, setAvailableDriveTextbooks] = useState<
+    Array<{ id: string; name: string; webViewLink: string }>
+  >([]);
   const [noteForm, setNoteForm] = useState({ title: "", content: "", sourceUrl: "" });
   const [onlineResourceForm, setOnlineResourceForm] = useState({
     title: "",
@@ -101,7 +111,14 @@ export function AdminPage() {
     [refreshKey, selectedModuleId],
   );
   const textbooks = useMemo(
-    () => (selectedSubjectId ? getTextbooks(selectedSubjectId) : []),
+    () => (selectedSubjectId ? getTextbooksForAdmin(selectedSubjectId) : []),
+    [refreshKey, selectedSubjectId],
+  );
+  const pendingTextbookRequests = useMemo(
+    () =>
+      listPendingTextbookRequests().filter((tb) =>
+        selectedSubjectId ? tb.subjectId === selectedSubjectId : true,
+      ),
     [refreshKey, selectedSubjectId],
   );
   const topicNotes = useMemo(
@@ -143,40 +160,42 @@ export function AdminPage() {
   }, [topics, selectedTopicId]);
 
   useEffect(() => {
-    // Initialize Google OAuth
     initializeTokenClient().catch((error) => {
-      console.error('Failed to initialize Google OAuth:', error);
+      console.error("Failed to initialize Google OAuth:", error);
     });
     setGoogleSignedIn(isSignedIn());
   }, []);
 
-  const loadAvailableTextbooks = async () => {
+  async function loadDriveTextbooksForImport() {
     try {
-      setLoadingTextbooks(true);
+      setLoadingDriveTextbooks(true);
       const files = await listTextbooksFromDrive();
-      setAvailableTextbooks(files);
-      setShowImportList(true);
+      setAvailableDriveTextbooks(files);
+      setShowDriveImportList(true);
     } catch (error) {
-      console.error('Failed to load textbooks from Google Drive:', error);
-      alert('Failed to load textbooks from Google Drive');
+      console.error("Failed to load textbooks from Google Drive:", error);
+      alert(`Failed to load textbooks from Google Drive: ${error instanceof Error ? error.message : "Unknown error"}`);
     } finally {
-      setLoadingTextbooks(false);
+      setLoadingDriveTextbooks(false);
     }
-  };
+  }
 
-  const importTextbookFromDrive = (file: { id: string; name: string; webViewLink: string }) => {
+  function importTextbookFromDrive(file: { id: string; name: string; webViewLink: string }) {
+    if (!selectedSubjectId) {
+      alert("Select a subject first, then click Import.");
+      return;
+    }
     addTextbook({
-      subjectId: selectedSubjectId || undefined,
+      subjectId: selectedSubjectId,
       title: file.name,
       url: file.webViewLink,
       fileName: file.name,
       driveFileId: file.id,
     });
-    
     refresh();
-    alert(`Textbook "${file.name}" imported successfully!`);
-    setShowImportList(false);
-  };
+    setShowDriveImportList(false);
+    alert(`Imported "${file.name}" from Google Drive.`);
+  }
 
   function handleSyllabusPaste(e: React.ClipboardEvent) {
     const items = e.clipboardData?.items;
@@ -723,36 +742,15 @@ export function AdminPage() {
               onChange={(e) => setTextbookFile(e.target.files?.[0] ?? null)}
             />
           </div>
-          <div className="mt-3 flex items-center gap-2">
-            {googleSignedIn ? (
-              <span className="text-green-600 text-sm">✓ Signed in to Google</span>
-            ) : (
-              <button
-                className="px-3 py-1.5 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700"
-                onClick={async () => {
-                  try {
-                    await signIn();
-                    setGoogleSignedIn(true);
-                  } catch (error) {
-                    console.error('Google sign-in failed:', error);
-                    alert('Failed to sign in to Google. Please check your credentials in .env');
-                  }
-                }}
-              >
-                Sign in to Google
-              </button>
-            )}
-          </div>
           <button
             className="mt-3 px-4 py-2 bg-primary text-white rounded-md disabled:opacity-50 hover:bg-primary/90"
-            disabled={!selectedSubjectId || !textbookForm.title.trim() || !textbookFile || uploading || !googleSignedIn}
+            disabled={!selectedSubjectId || !textbookForm.title.trim() || !textbookFile || !googleSignedIn || uploadingTextbook}
             onClick={async () => {
               if (!selectedSubjectId || !textbookForm.title.trim() || !textbookFile) return;
-              setUploading(true);
+              setUploadingTextbook(true);
               try {
                 const folderId = await getOrCreateTextbooksFolder();
                 const result = await uploadFileToDrive(textbookFile, folderId);
-                
                 addTextbook({
                   subjectId: selectedSubjectId,
                   title: textbookForm.title,
@@ -762,51 +760,78 @@ export function AdminPage() {
                 });
                 setTextbookForm({ title: "" });
                 setTextbookFile(null);
-                alert('Textbook uploaded successfully!');
                 refresh();
+                alert("Textbook uploaded to Google Drive successfully!");
               } catch (error) {
-                console.error('Upload failed:', error);
-                alert(`Upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+                console.error("Textbook upload failed:", error);
+                alert(`Upload failed: ${error instanceof Error ? error.message : "Unknown error"}`);
               } finally {
-                setUploading(false);
+                setUploadingTextbook(false);
               }
             }}
           >
-            {uploading ? 'Uploading...' : 'Upload Textbook to Google Drive'}
+            {uploadingTextbook ? "Uploading..." : "Upload to Google Drive"}
           </button>
-          <button
-            className="mt-2 px-4 py-2 bg-blue-500 text-white rounded-md disabled:opacity-50 hover:bg-blue-600"
-            disabled={!selectedSubjectId || !googleSignedIn || loadingTextbooks}
-            onClick={loadAvailableTextbooks}
-          >
-            {loadingTextbooks ? 'Loading...' : 'Import from Google Drive'}
-          </button>
-          
-          {showImportList && (
-            <div className="mt-4 p-4 border rounded-lg bg-blue-50">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="font-semibold text-lg">Available Textbooks in Google Drive</h3>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            {googleSignedIn ? (
+              <span className="text-green-600 text-sm">Signed in to Google Drive</span>
+            ) : (
+              <button
+                type="button"
+                className="px-3 py-1.5 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700"
+                onClick={async () => {
+                  try {
+                    await signIn();
+                    setGoogleSignedIn(true);
+                  } catch (error) {
+                    console.error("Google sign-in failed:", error);
+                    const message = error instanceof Error ? error.message : "Unknown error";
+                    alert(`Failed to sign in to Google Drive: ${message}. Also verify this localhost URL is allowed in Google OAuth authorized JavaScript origins.`);
+                  }
+                }}
+              >
+                Sign in to Google
+              </button>
+            )}
+            <button
+              type="button"
+              className="px-3 py-1.5 bg-blue-500 text-white rounded-md text-sm disabled:opacity-50 hover:bg-blue-600"
+              disabled={!googleSignedIn || loadingDriveTextbooks}
+              onClick={loadDriveTextbooksForImport}
+            >
+              {loadingDriveTextbooks ? "Loading..." : "Import from Google Drive"}
+            </button>
+          </div>
+          {!selectedSubjectId ? (
+            <p className="mt-2 text-xs text-slate-500">Tip: you can view Google Drive files now; select a subject before importing one.</p>
+          ) : null}
+          {showDriveImportList ? (
+            <div className="mt-4 p-3 border rounded-md bg-slate-50 space-y-2">
+              <div className="flex items-center justify-between">
+                <h3 className="font-medium">Available in Google Drive</h3>
                 <button
-                  className="text-gray-500 hover:text-gray-700"
-                  onClick={() => setShowImportList(false)}
+                  type="button"
+                  className="text-slate-500 hover:text-slate-700"
+                  onClick={() => setShowDriveImportList(false)}
                 >
-                  ✕
+                  ×
                 </button>
               </div>
-              {availableTextbooks.length === 0 ? (
-                <p className="text-gray-600">No textbooks found in Google Drive Textbooks folder</p>
+              {availableDriveTextbooks.length === 0 ? (
+                <p className="text-sm text-slate-500">No textbooks found in Google Drive Textbooks folder.</p>
               ) : (
-                <div className="space-y-2 max-h-96 overflow-y-auto">
-                  {availableTextbooks.map((file) => (
-                    <div key={file.id} className="flex items-center justify-between bg-white p-3 rounded-md border">
-                      <div className="flex-1">
-                        <p className="font-medium text-sm">{file.name}</p>
-                        <a href={file.webViewLink} target="_blank" rel="noopener noreferrer" className="text-blue-600 text-xs hover:underline">
+                <div className="space-y-2 max-h-72 overflow-y-auto">
+                  {availableDriveTextbooks.map((file) => (
+                    <div key={file.id} className="flex items-center justify-between gap-2 border rounded-md bg-white p-2">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium truncate">{file.name}</p>
+                        <a href={file.webViewLink} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-600 hover:underline">
                           View in Drive
                         </a>
                       </div>
                       <button
-                        className="ml-3 px-3 py-1.5 bg-green-600 text-white rounded-md text-sm hover:bg-green-700"
+                        type="button"
+                        className="px-3 py-1.5 bg-green-600 text-white rounded-md text-sm hover:bg-green-700"
                         onClick={() => importTextbookFromDrive(file)}
                       >
                         Import
@@ -816,22 +841,44 @@ export function AdminPage() {
                 </div>
               )}
             </div>
-          )}
+          ) : null}
           <div className="mt-4 space-y-2">
             {textbooks.map((tb) => (
               <div key={tb.id} className="grid md:grid-cols-[1fr_auto] gap-2 items-center border rounded-md p-2">
-                <a href={tb.url} target="_blank" rel="noopener noreferrer" className="text-primary">
-                  {tb.title} {tb.fileName ? `(${tb.fileName})` : ""}
-                </a>
-                <button
-                  className="px-3 py-1.5 bg-red-600 text-white rounded-md"
-                  onClick={() => {
-                    deleteTextbook(tb.id);
-                    refresh();
-                  }}
-                >
-                  Delete
-                </button>
+                <div className="min-w-0">
+                  <a href={tb.url} target="_blank" rel="noopener noreferrer" className="text-primary">
+                    {tb.title} {tb.fileName ? `(${tb.fileName})` : ""}
+                  </a>
+                  <div className="mt-1">
+                    <span
+                      className={`px-2 py-0.5 rounded text-xs ${tb.status === "approved" ? "bg-green-100 text-green-800" : "bg-amber-100 text-amber-800"}`}
+                    >
+                      {tb.status}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 justify-end">
+                  {tb.status === "pending" ? (
+                    <button
+                      className="px-3 py-1.5 bg-green-600 text-white rounded-md"
+                      onClick={() => {
+                        approveTextbookRequest(tb.id);
+                        refresh();
+                      }}
+                    >
+                      Approve
+                    </button>
+                  ) : null}
+                  <button
+                    className="px-3 py-1.5 bg-red-600 text-white rounded-md"
+                    onClick={() => {
+                      deleteTextbook(tb.id);
+                      refresh();
+                    }}
+                  >
+                    Delete
+                  </button>
+                </div>
               </div>
             ))}
             {selectedSubjectId && textbooks.length === 0 ? (
@@ -841,92 +888,45 @@ export function AdminPage() {
         </div>
 
         <div className="bg-white rounded-xl shadow border p-4">
-          <h2 className="text-xl font-medium mb-3">Global Textbooks (Available to Everyone)</h2>
-          <div className="grid md:grid-cols-2 gap-3">
-            <input
-              className="border rounded-md px-3 py-2"
-              placeholder="Textbook title"
-              aria-label="Global textbook title"
-              value={globalTextbookForm.title}
-              onChange={(e) => setGlobalTextbookForm((v) => ({ ...v, title: e.target.value }))}
-            />
-            <input
-              className="border rounded-md px-3 py-2"
-              type="file"
-              accept=".pdf,.doc,.docx,.ppt,.pptx"
-              aria-label="Global textbook file upload"
-              onChange={(e) => setGlobalTextbookFile(e.target.files?.[0] ?? null)}
-            />
-          </div>
-          <div className="mt-3 flex items-center gap-2">
-            {googleSignedIn ? (
-              <span className="text-green-600 text-sm">✓ Signed in to Google</span>
-            ) : (
-              <button
-                className="px-3 py-1.5 bg-blue-600 text-white rounded-md text-sm hover:bg-blue-700"
-                onClick={async () => {
-                  try {
-                    await signIn();
-                    setGoogleSignedIn(true);
-                  } catch (error) {
-                    console.error('Google sign-in failed:', error);
-                    alert('Failed to sign in to Google. Please check your credentials in .env');
-                  }
-                }}
-              >
-                Sign in to Google
-              </button>
-            )}
-          </div>
-          <button
-            className="mt-3 px-4 py-2 bg-primary text-white rounded-md disabled:opacity-50 hover:bg-primary/90"
-            disabled={!globalTextbookForm.title.trim() || !globalTextbookFile || uploading || !googleSignedIn}
-            onClick={async () => {
-              if (!globalTextbookForm.title.trim() || !globalTextbookFile) return;
-              setUploading(true);
-              try {
-                const folderId = await getOrCreateTextbooksFolder();
-                const result = await uploadFileToDrive(globalTextbookFile, folderId);
-                
-                addTextbook({
-                  title: globalTextbookForm.title,
-                  url: result.webViewLink,
-                  fileName: globalTextbookFile.name,
-                  driveFileId: result.id,
-                });
-                setGlobalTextbookForm({ title: "" });
-                setGlobalTextbookFile(null);
-                alert('Global textbook uploaded successfully!');
-                refresh();
-              } catch (error) {
-                console.error('Upload failed:', error);
-                alert(`Upload failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
-              } finally {
-                setUploading(false);
-              }
-            }}
-          >
-            {uploading ? 'Uploading...' : 'Upload Global Textbook to Google Drive'}
-          </button>
-          <div className="mt-4 space-y-2">
-            {textbooks.filter(tb => !tb.subjectId).map((tb) => (
+          <h2 className="text-xl font-medium mb-3">Pending Textbook Requests</h2>
+          <p className="text-sm text-slate-600 mb-3">
+            Review public uploads and approve only verified textbooks.
+          </p>
+          <div className="space-y-2">
+            {pendingTextbookRequests.map((tb) => (
               <div key={tb.id} className="grid md:grid-cols-[1fr_auto] gap-2 items-center border rounded-md p-2">
-                <a href={tb.url} target="_blank" rel="noopener noreferrer" className="text-primary">
-                  {tb.title} {tb.fileName ? `(${tb.fileName})` : ""}
-                </a>
-                <button
-                  className="px-2 py-1 text-xs bg-red-500 text-white rounded hover:bg-red-600"
-                  onClick={() => {
-                    deleteTextbook(tb.id);
-                    refresh();
-                  }}
-                >
-                  Delete
-                </button>
+                <div className="min-w-0">
+                  <a href={tb.url} target="_blank" rel="noopener noreferrer" className="text-primary">
+                    {tb.title} {tb.fileName ? `(${tb.fileName})` : ""}
+                  </a>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Subject: {subjects.find((s) => s.id === tb.subjectId)?.name ?? tb.subjectId ?? "Unknown"}
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 justify-end">
+                  <button
+                    className="px-3 py-1.5 bg-green-600 text-white rounded-md"
+                    onClick={() => {
+                      approveTextbookRequest(tb.id);
+                      refresh();
+                    }}
+                  >
+                    Approve
+                  </button>
+                  <button
+                    className="px-3 py-1.5 bg-red-600 text-white rounded-md"
+                    onClick={() => {
+                      rejectTextbookRequest(tb.id);
+                      refresh();
+                    }}
+                  >
+                    Reject
+                  </button>
+                </div>
               </div>
             ))}
-            {textbooks.filter(tb => !tb.subjectId).length === 0 ? (
-              <p className="text-sm text-slate-500">No global textbooks added.</p>
+            {pendingTextbookRequests.length === 0 ? (
+              <p className="text-sm text-slate-500">No pending textbook requests.</p>
             ) : null}
           </div>
         </div>

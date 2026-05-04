@@ -20,8 +20,10 @@ import {
   getTopicVideos as dbGetTopicVideos,
   departmentUsesSemesters,
   CYCLE_SEMESTER_ID,
+  addTextbook,
 } from "@/app/data/localDb";
 import { askTopicAssistant } from "@/app/services/aiAssistant";
+import { getOrCreateTextbooksFolder, signIn, uploadFileToDrive } from "@/app/services/googleDrive";
 
 // ==================== DATA SERVICE ====================
 // This service layer makes it easy to swap out mock data with real database calls
@@ -66,11 +68,6 @@ class DataService {
   static async getTextbooks(subjectId: string) {
     await this.delay(500);
     return dbGetTextbooks(subjectId);
-  }
-
-  static async getGlobalTextbooks() {
-    await this.delay(300);
-    return dbGetTextbooks().filter(tb => !tb.subjectId);
   }
 
   static async getNotes(topicId: string) {
@@ -145,7 +142,9 @@ export function Dashboard() {
   const [modules, setModules] = useState<DropdownOption[]>([]);
   const [topics, setTopics] = useState<DropdownOption[]>([]);
   const [textbooks, setTextbooks] = useState<Textbook[]>([]);
-  const [globalTextbooks, setGlobalTextbooks] = useState<Textbook[]>([]);
+  const [requestForm, setRequestForm] = useState({ title: "" });
+  const [requestFile, setRequestFile] = useState<File | null>(null);
+  const [submittingRequest, setSubmittingRequest] = useState(false);
   const [notes, setNotes] = useState<TopicNote[]>([]);
   const [onlineResources, setOnlineResources] = useState<ResourceLink[]>([]);
   const [videos, setVideos] = useState<VideoResource[]>([]);
@@ -166,8 +165,6 @@ export function Dashboard() {
   useEffect(() => {
     DataService.getDepartments().then(setDepartments);
     DataService.getSemesters().then(setSemesters);
-    // Load global textbooks
-    DataService.getGlobalTextbooks().then(setGlobalTextbooks);
   }, []);
 
   // Load subjects when department is selected (semester required only for non-cycle departments)
@@ -292,7 +289,7 @@ export function Dashboard() {
       <div className="absolute bottom-0 left-0 w-[500px] h-[500px] bg-destructive/5 rounded-full blur-3xl" />
       
       {/* Header */}
-      <header className="px-6 py-4 border-b border-primary/10 bg-white/70 backdrop-blur-md sticky top-0 z-50 shadow-sm relative">
+      <header className="px-6 py-4 border-b border-primary/10 bg-white/70 backdrop-blur-md sticky top-0 z-50 shadow-sm">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-4">
             <button
@@ -435,31 +432,6 @@ export function Dashboard() {
           </div>
         </motion.div>
 
-        {/* Global Textbooks section */}
-        {globalTextbooks.length > 0 && (
-          <motion.section
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="mb-8 bg-white/90 rounded-2xl border border-primary/10 p-6"
-          >
-            <h3 className="text-2xl text-primary mb-3">Global Textbooks</h3>
-            <div className="grid sm:grid-cols-2 gap-3">
-              {globalTextbooks.map((book) => (
-                <a
-                  key={book.id}
-                  href={book.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="border border-primary/10 rounded-lg p-4 hover:border-primary/30 transition-colors bg-white"
-                >
-                  <div className="font-medium text-primary">{book.title}</div>
-                  <div className="text-sm text-muted-foreground">{book.fileName || "Open textbook"}</div>
-                </a>
-              ))}
-            </div>
-          </motion.section>
-        )}
-
         {/* Textbooks folder appears when subject is selected */}
         {selectedSubject && (
           <motion.section
@@ -468,6 +440,62 @@ export function Dashboard() {
             className="mb-8 bg-white/90 rounded-2xl border border-primary/10 p-6"
           >
             <h3 className="text-2xl text-primary mb-3">Textbooks Folder</h3>
+            <div className="mb-4 p-4 border rounded-lg bg-blue-50">
+              <h4 className="font-semibold mb-1">Request textbook addition</h4>
+              <p className="text-xs text-slate-600 mb-3">
+                Your upload goes to Drive as a pending request. It becomes visible to everyone only after admin approval.
+              </p>
+              <div className="grid md:grid-cols-2 gap-3">
+                <input
+                  className="border rounded-md px-3 py-2"
+                  placeholder="Textbook title"
+                  aria-label="Requested textbook title"
+                  value={requestForm.title}
+                  onChange={(e) => setRequestForm({ title: e.target.value })}
+                />
+                <input
+                  className="border rounded-md px-3 py-2"
+                  type="file"
+                  accept=".pdf,.doc,.docx,.ppt,.pptx"
+                  aria-label="Requested textbook file upload"
+                  onChange={(e) => setRequestFile(e.target.files?.[0] ?? null)}
+                />
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2 items-center">
+                <button
+                  className="px-4 py-2 bg-primary text-white rounded-md disabled:opacity-50 hover:bg-primary/90"
+                  disabled={!requestForm.title.trim() || !requestFile || submittingRequest}
+                  onClick={async () => {
+                    if (!selectedSubject || !requestForm.title.trim() || !requestFile) return;
+                    setSubmittingRequest(true);
+                    try {
+                      // Acquire user consent/token as part of submission flow.
+                      await signIn();
+                      const folderId = await getOrCreateTextbooksFolder();
+                      const uploaded = await uploadFileToDrive(requestFile, folderId);
+                      addTextbook({
+                        subjectId: selectedSubject,
+                        title: requestForm.title,
+                        fileName: requestFile.name,
+                        url: uploaded.webViewLink,
+                        driveFileId: uploaded.id,
+                        status: "pending",
+                      });
+                      setRequestForm({ title: "" });
+                      setRequestFile(null);
+                      alert("Textbook request submitted. Admin will verify and approve it.");
+                    } catch (error) {
+                      console.error("Textbook request upload failed:", error);
+                      alert(`Failed to submit request: ${error instanceof Error ? error.message : "Unknown error"}`);
+                    } finally {
+                      setSubmittingRequest(false);
+                    }
+                  }}
+                >
+                  {submittingRequest ? "Submitting..." : "Submit for Admin Approval"}
+                </button>
+              </div>
+            </div>
             {isLoadingTextbooks ? (
               <p className="text-muted-foreground">Loading textbooks...</p>
             ) : textbooks.length ? (
